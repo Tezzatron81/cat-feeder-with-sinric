@@ -1,0 +1,155 @@
+#define ESP32_RTOS  // Uncomment this line if you want to use the code with freertos only on the ESP32
+
+#include "OTA.h"
+#include "credentials.h"
+#include <ESP32Servo.h>
+#include <SinricPro.h>
+#include "SinricProSwitch.h"
+#if defined(ESP8266)
+  #include <ESP8266WiFi.h>
+#elif defined(ESP32) || defined(ARDUINO_ARCH_RP2040)
+  #include <WiFi.h>
+#endif
+
+#define SERVO_PIN         17
+#define BUZZER_PIN        16
+#define WIFI_SSID         "TelstraA857CE"
+#define WIFI_PASS         "fuateu9u4t"
+#define APP_KEY           "d1be71c6-6f7d-40c9-9f6f-7b2c577456cb"
+#define APP_SECRET        "c9410cf7-2b8a-448d-a628-076c02eb532f-6039d412-1343-4d34b674426c"   
+#define SWITCH_ID_1       "66c08d550d73840bd1aa6b57"
+#define BAUD_RATE         115200
+
+Servo myservo;
+unsigned long previousMillis = 0;  // Stores the last time an action was triggered
+bool servoMoving = false;
+bool buzzerActive = false;
+unsigned long actionStartTime = 0;
+int buzzerStep = 0;
+
+void servoMove() {
+  if (!servoMoving) {
+    myservo.attach(SERVO_PIN);
+    myservo.write(40);  // Start rotating the servo
+    servoMoving = true;
+    actionStartTime = millis();
+  } else {
+    if (millis() - actionStartTime >= 4000) {  // 4 seconds elapsed
+      myservo.write(90);  // Move servo to the neutral position (stopped)
+      //delay(500);  // Brief delay to ensure the servo stops
+      //myservo.detach();  // Detach the servo
+      servoMoving = false;
+    }
+  }
+}
+
+void buzz() {
+  unsigned long currentMillis = millis();
+
+  if (buzzerStep == 0) {
+    tone(BUZZER_PIN, 4800);  // Start first tone
+    buzzerActive = true;
+    buzzerStep = 1;
+    actionStartTime = currentMillis;
+  }
+
+  if (buzzerStep == 1 && currentMillis - actionStartTime >= 800) {
+    noTone(BUZZER_PIN);  // Stop first tone
+    buzzerStep = 2;
+    actionStartTime = currentMillis;
+  }
+
+  if (buzzerStep == 2 && currentMillis - actionStartTime >= 100) {
+    tone(BUZZER_PIN, 4500);  // Start second tone
+    buzzerStep = 3;
+    actionStartTime = currentMillis;
+  }
+
+  if (buzzerStep == 3 && currentMillis - actionStartTime >= 800) {
+    noTone(BUZZER_PIN);  // Stop second tone
+    buzzerStep = 4;
+    actionStartTime = currentMillis;
+  }
+
+  if (buzzerStep == 4 && currentMillis - actionStartTime >= 100) {
+    tone(BUZZER_PIN, 4000);  // Start third tone
+    buzzerStep = 5;
+    actionStartTime = currentMillis;
+  }
+
+  if (buzzerStep == 5 && currentMillis - actionStartTime >= 800) {
+    noTone(BUZZER_PIN);  // Stop third tone
+    buzzerStep = 0;
+    buzzerActive = false;
+  }
+}
+
+// Callback function that is called when the switch is toggled in the Sinric Pro app
+bool onPowerState(const String &deviceId, bool &state) {
+  Serial.printf("Device %s turned %s\r\n", deviceId.c_str(), state ? "ON" : "OFF");
+  if (state && !buzzerActive && !servoMoving) {
+    buzz();
+    servoMove();
+  }
+  return true;  // Return true to confirm the command was processed successfully
+}
+
+void setupWiFi() {
+  Serial.printf("\r\n[Wifi]: Connecting");
+
+  #if defined(ESP8266)
+    WiFi.setSleepMode(WIFI_NONE_SLEEP); 
+    WiFi.setAutoReconnect(true);
+  #elif defined(ESP32)
+    WiFi.setSleep(false); 
+    WiFi.setAutoReconnect(true);
+  #endif
+
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.printf(".");
+    delay(250);
+  }
+
+  Serial.printf("connected!\r\n[WiFi]: IP-Address is %s\r\n", WiFi.localIP().toString().c_str());
+}
+
+void setupSinricPro() {
+  SinricProSwitch& mySwitch1 = SinricPro[SWITCH_ID_1];
+  mySwitch1.onPowerState(onPowerState);
+    
+  SinricPro.onConnected([](){ Serial.printf("Connected to SinricPro\r\n"); }); 
+  SinricPro.onDisconnected([](){ Serial.printf("Disconnected from SinricPro\r\n"); });
+   
+  SinricPro.begin(APP_KEY, APP_SECRET);
+}
+
+void setup() {
+  Serial.begin(BAUD_RATE);
+  Serial.println("Booting");
+
+  setupOTA("automatic cat feeder", mySSID, myPASSWORD);
+  
+  pinMode(BUZZER_PIN, OUTPUT);  // Set buzzer pin as output
+  myservo.attach(SERVO_PIN);
+  myservo.write(90);  // Initialize the servo to 90 degrees (stopped)
+
+  setupWiFi();
+  setupSinricPro();
+}
+
+void loop() {
+  #ifdef defined(ESP32_RTOS) && defined(ESP32)
+  #else  // If you do not use FreeRTOS, you have to regularly call the handle method.
+    ArduinoOTA.handle();
+  #endif
+  
+  SinricPro.handle();
+
+  if (buzzerActive) {
+    buzz();  // Continuously check for buzzer operation
+  } else if (servoMoving) {
+    servoMove();  // Continuously check for servo operation
+  }
+}
